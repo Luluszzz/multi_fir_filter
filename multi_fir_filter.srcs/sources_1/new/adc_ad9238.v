@@ -1,6 +1,7 @@
 // AD9238 单通道ADC采样模块（Source）
 // 功能：输出采样时钟给AD9238，采集12bit并行数据
 // 采样时钟由顶层分频后传入，支持可配置采样率
+
 module adc_ad9238 (
     input  wire        clk,            // 系统工作时钟（50MHz）
     input  wire        rst_n,          // 异步复位，低有效

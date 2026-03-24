@@ -1,9 +1,11 @@
 // 顶层模块
 // 功能：ADC采集 → FIR滤波 → 格式化 → DAC输出
+//       ADC原始数据旁路 → FFT频谱分析 → UART发送（FireWater格式）
 // 管道架构：Source(adc_ad9238) → FIR(fir_filter) → Format(dac_format) → Sink(dac_ad9767)
+//           ↘ fft_core → uart_fft_sender → uart_tx
 module top #(
     parameter SYS_CLK_FREQ = 50_000_000,  // 系统时钟频率（Hz）
-    parameter SAMPLE_RATE  = 2_000_000    // 采样率（Hz），默认2MHz
+    parameter SAMPLE_RATE  = 1_024_000    // 采样率（Hz）
 ) (
     input  wire        sys_clk,              // 50MHz系统时钟
     input  wire        sys_rst_n,            // 异步复位按钮，低有效
@@ -19,7 +21,10 @@ module top #(
     // AD9767 通道0
     output wire        ad9767_clk_ch0,      // AD9767 CH0 时钟
     output wire        ad9767_wrt_ch0,      // AD9767 CH0 写信号
-    output wire [13:0] ad9767_data_ch0     // AD9767 CH0 数据
+    output wire [13:0] ad9767_data_ch0,    // AD9767 CH0 数据
+
+    // UART
+    output wire        uart_tx         // UART TX 输出
 
     // AD9767 通道1
     // output wire        ad9767_clk_ch1,      // AD9767 CH1 时钟
@@ -93,6 +98,8 @@ module top #(
     // 分频系数 = SYS_CLK_FREQ / SAMPLE_RATE / 2
     // 50MHz / 2MHz / 2 = 12.5，取整为12，计数0~11翻转，实际采样率 ≈ 2.083MHz
     // 若需精确2MHz，可调整SYS_CLK_FREQ使其整除
+
+    // 50/1.024/2=24.4 -> 24 , 48 , sample= 1.04 -> 1.04167M / 1024 = 1.017K
     localparam DIV_CNT_MAX = SYS_CLK_FREQ / SAMPLE_RATE / 2 - 1;
 
     reg [$clog2(DIV_CNT_MAX+1)-1:0] div_cnt;
@@ -169,6 +176,54 @@ module top #(
         .dac_clk       (ad9767_clk_ch0),
         .dac_wrt       (ad9767_wrt_ch0),
         .dac_data      (ad9767_data_ch0)
+    );
+
+    // =========================================================================
+    // FFT 频谱分析（旁路，ADC原始数据，一次性）
+    // =========================================================================
+    wire        fft_done;
+    wire [9:0]  fft_rd_addr;
+    wire [23:0] fft_rd_data;
+
+    fft_core u_fft (
+        .clk       (clk_50m),
+        .rst_n     (rst_n),
+        .din       (adc_sample_ch0),
+        .din_valid (adc_valid_ch0),
+        .rd_addr   (fft_rd_addr),
+        .rd_data   (fft_rd_data),
+        .done      (fft_done)
+    );
+
+    // =========================================================================
+    // UART FFT 结果发送（FireWater 格式）
+    // =========================================================================
+    wire [7:0]  uart_tx_data;
+    wire        uart_tx_data_valid;
+    wire        uart_tx_data_ready;
+
+    uart_fft_sender u_fft_sender (
+        .clk          (clk_50m),
+        .rst_n        (rst_n),
+        .start        (fft_done),
+        .fft_rd_addr  (fft_rd_addr),
+        .fft_rd_data  (fft_rd_data),
+        .tx_data      (uart_tx_data),
+        .tx_data_valid(uart_tx_data_valid),
+        .tx_data_ready(uart_tx_data_ready),
+        .done         ()
+    );
+
+    uart_tx #(
+        .CLK_FRE   (50),
+        .BAUD_RATE (115200)
+    ) u_uart_tx (
+        .clk           (clk_50m),
+        .rst_n         (rst_n),
+        .tx_data       (uart_tx_data),
+        .tx_data_valid (uart_tx_data_valid),
+        .tx_data_ready (uart_tx_data_ready),
+        .tx_pin        (uart_tx)
     );
 
 endmodule
